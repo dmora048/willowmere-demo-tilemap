@@ -10,6 +10,18 @@ const WORLD_SIZE := Vector2(1152, 720)
 const PLAYER_SPEED := 145.0
 const NPC_INTERACT_DISTANCE := 68.0
 const ACTOR_FRAME_SIZE := 32
+const FARM_PLOT_COLUMNS := 6
+const FARM_PLOT_ROWS := 5
+const FARM_PLOT_START := Vector2(416, 354)
+const FARM_PLOT_SPACING := Vector2(68, 52)
+const HOTBAR_SIZE := 9
+const INVENTORY_GRID_SIZE := 27
+
+const CROP_INFO := {
+	"turnip": {"name": "Turnip", "seed_name": "Turnip Seeds", "seed_price": 10, "grow_days": 2, "sell_price": 18, "color": Color("#F0D8B7")},
+	"potato": {"name": "Potato", "seed_name": "Potato Seeds", "seed_price": 15, "grow_days": 3, "sell_price": 28, "color": Color("#D9B66D")},
+	"carrot": {"name": "Carrot", "seed_name": "Carrot Seeds", "seed_price": 20, "grow_days": 4, "sell_price": 36, "color": Color("#F39A50")}
+}
 
 const COLOR_BORDER := Color("#35506B")
 const COLOR_TEXT := Color("#F6F0DB")
@@ -21,14 +33,55 @@ const COLOR_RED := Color("#F58D78")
 
 const PLAYER_IDLE_TEXTURE: Texture2D = preload("res://asset_pack/Character/Idle.png")
 const PLAYER_WALK_TEXTURE: Texture2D = preload("res://asset_pack/Character/Walk.png")
+const INTERIOR_TEXTURE: Texture2D = preload("res://asset_pack/Objects/Interior.png")
+const SPRING_CROPS_TEXTURE: Texture2D = preload("res://asset_pack/Objects/Spring Crops.png")
+
+const ITEM_INFO := {
+	"tool_hoe": {"name": "Hoe", "kind": "tool", "tool": "Hoe", "sheet": "interior", "region": Rect2(0, 0, 16, 16), "tint": Color("#F3C777")},
+	"tool_seed_bag": {"name": "Seed Bag", "kind": "tool", "tool": "Seed Bag", "sheet": "interior", "region": Rect2(16, 0, 16, 16), "tint": Color("#C6A572")},
+	"tool_watering_can": {"name": "Watering Can", "kind": "tool", "tool": "Watering Can", "sheet": "interior", "region": Rect2(32, 0, 16, 16), "tint": Color("#87B9C8")},
+	"tool_harvest_knife": {"name": "Harvest Knife", "kind": "tool", "tool": "Harvest Knife", "sheet": "interior", "region": Rect2(48, 0, 16, 16), "tint": Color("#D4DCE0")},
+	"turnip_seed": {"name": "Turnip Seeds", "kind": "seed", "crop": "turnip", "sheet": "crops", "region": Rect2(128, 0, 16, 16), "tint": Color.WHITE},
+	"potato_seed": {"name": "Potato Seeds", "kind": "seed", "crop": "potato", "sheet": "crops", "region": Rect2(144, 0, 16, 16), "tint": Color.WHITE},
+	"carrot_seed": {"name": "Carrot Seeds", "kind": "seed", "crop": "carrot", "sheet": "crops", "region": Rect2(160, 0, 16, 16), "tint": Color.WHITE},
+	"turnip": {"name": "Turnip", "kind": "crop", "crop": "turnip", "sheet": "crops", "region": Rect2(176, 64, 16, 16), "tint": Color.WHITE},
+	"potato": {"name": "Potato", "kind": "crop", "crop": "potato", "sheet": "crops", "region": Rect2(192, 64, 16, 16), "tint": Color.WHITE},
+	"carrot": {"name": "Carrot", "kind": "crop", "crop": "carrot", "sheet": "crops", "region": Rect2(208, 64, 16, 16), "tint": Color.WHITE}
+}
 
 var world: Node2D
+var town_world: Node2D
+var farm_world: Node2D
+var house_world: Node2D
 var player: CharacterBody2D
 var player_sprite: AnimatedSprite2D
 var actor_frames: SpriteFrames
 var player_facing := "down"
 var player_last_direction := Vector2.DOWN
 var npcs: Array = []
+var active_location := "town"
+var day_number := 1
+var money := 60
+var inventory: Dictionary = {
+	"turnip_seed": 0, "potato_seed": 0, "carrot_seed": 0,
+	"turnip": 0, "potato": 0, "carrot": 0
+}
+var selected_tool := "Hoe"
+var selected_seed := "turnip"
+var selected_hotbar_slot := 0
+var hotbar_items: Array[String] = ["tool_hoe", "tool_seed_bag", "tool_watering_can", "tool_harvest_knife", "", "", "", "", ""]
+var farm_plots: Array[Dictionary] = []
+var shop_overlay: Control
+var shop_rows: VBoxContainer
+var shop_wallet_label: Label
+var inventory_overlay: Control
+var inventory_grid: GridContainer
+var inventory_grid_buttons: Array[Button] = []
+var hotbar_buttons: Array[Button] = []
+var hotbar_panel: PanelContainer
+var item_icon_cache: Dictionary = {}
+var toast_timer := 0.0
+var toast_message := ""
 
 var hud: Control
 var interaction_panel: PanelContainer
@@ -47,11 +100,10 @@ var settings_overlay: Control
 var title_overlay: Control
 var quest_title_label: Label
 var quest_detail_label: Label
-var forage_spots: Array[Dictionary] = []
-
-const QUEST_CROP_TARGET := 5
-var crops_collected := 0
-var quest_completed := false
+var day_money_label: Label
+var location_subtitle_label: Label
+var quest_action_button: Button
+var quest_action_status: Label
 var game_started := false
 var dialogue_open := false
 var active_npc: Dictionary = {}
@@ -59,10 +111,20 @@ var dialogue_history: Array[Dictionary] = []
 var request_in_flight := false
 var pending_user_text := ""
 var api_key: String = GEMINI_API_KEY
+var quests: Array[Dictionary] = [
+	{"id": "mira_turnips", "npc_id": "mira", "npc_name": "Mira", "crop": "turnip", "amount": 3, "reward": 90, "accepted": false, "complete": false},
+	{"id": "bram_potatoes", "npc_id": "bram", "npc_name": "Bram", "crop": "potato", "amount": 2, "reward": 100, "accepted": false, "complete": false},
+	{"id": "juno_carrots", "npc_id": "juno", "npc_name": "Juno", "crop": "carrot", "amount": 3, "reward": 150, "accepted": false, "complete": false}
+]
 
 
 func _ready() -> void:
-	world = get_node("World") as Node2D
+	town_world = get_node("World") as Node2D
+	farm_world = get_node("Farm") as Node2D
+	house_world = get_node("House") as Node2D
+	world = town_world
+	farm_world.visible = false
+	house_world.visible = false
 	player = world.get_node("Player") as CharacterBody2D
 	actor_frames = _create_actor_frames()
 	player_sprite = player.get_node("AnimatedSprite2D") as AnimatedSprite2D
@@ -72,9 +134,9 @@ func _ready() -> void:
 	var player_preview := player.get_node("EditorPreview") as Sprite2D
 	player_preview.visible = false
 
-	for crop_node in get_tree().get_nodes_in_group("forage_crop"):
-		forage_spots.append({"node": crop_node})
+	_create_storefront()
 	_load_scene_npcs()
+	_initialize_farm_plots()
 
 	_build_hud()
 	_update_api_status()
@@ -83,28 +145,110 @@ func _ready() -> void:
 	_update_interaction_prompt()
 
 
+func _create_storefront() -> void:
+	var storefront := Node2D.new()
+	storefront.name = "WillowmereSeedStore"
+	storefront.position = Vector2(730, 202)
+	storefront.z_index = 160
+	town_world.add_child(storefront)
+	var shop_shadow := Polygon2D.new()
+	shop_shadow.polygon = PackedVector2Array([-70, -72, 70, -72, 70, 8, -70, 8])
+	shop_shadow.color = Color("#75513A")
+	storefront.add_child(shop_shadow)
+	var shop_body := Polygon2D.new()
+	shop_body.polygon = PackedVector2Array([-64, -80, 64, -80, 64, 4, -64, 4])
+	shop_body.color = Color("#F0D0A0")
+	shop_body.z_index = 1
+	storefront.add_child(shop_body)
+	var shop_roof := Polygon2D.new()
+	shop_roof.polygon = PackedVector2Array([-76, -74, 0, -124, 76, -74])
+	shop_roof.color = Color("#934D3D")
+	shop_roof.z_index = 2
+	storefront.add_child(shop_roof)
+	var awning := Polygon2D.new()
+	awning.polygon = PackedVector2Array([-58, -42, 58, -42, 58, -19, -58, -19])
+	awning.color = Color("#55977A")
+	awning.z_index = 3
+	storefront.add_child(awning)
+	var door := Polygon2D.new()
+	door.polygon = PackedVector2Array([-17, -18, 17, -18, 17, 4, -17, 4])
+	door.color = Color("#684333")
+	door.z_index = 4
+	storefront.add_child(door)
+	var store_sign := Label.new()
+	store_sign.text = "SEEDS  ·  PRODUCE"
+	store_sign.position = Vector2(-72, -107)
+	store_sign.size = Vector2(144, 20)
+	store_sign.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	store_sign.add_theme_font_size_override("font_size", 10)
+	store_sign.add_theme_color_override("font_color", Color("#FFF0CC"))
+	store_sign.add_theme_color_override("font_outline_color", Color("#382C27"))
+	store_sign.add_theme_constant_override("outline_size", 4)
+	store_sign.z_index = 5
+	storefront.add_child(store_sign)
+
+	var clerk := StaticBody2D.new()
+	clerk.name = "NPC_Clerk"
+	clerk.position = Vector2(0, 18)
+	clerk.z_index = 280
+	clerk.collision_layer = 1
+	clerk.collision_mask = 1
+	clerk.add_to_group("village_npc")
+	storefront.add_child(clerk)
+	var clerk_collision := CollisionShape2D.new()
+	var clerk_shape := CapsuleShape2D.new()
+	clerk_shape.radius = 8.0
+	clerk_shape.height = 18.0
+	clerk_collision.shape = clerk_shape
+	clerk.add_child(clerk_collision)
+	var clerk_sprite := AnimatedSprite2D.new()
+	clerk_sprite.name = "AnimatedSprite2D"
+	clerk_sprite.position = Vector2(0, -15)
+	clerk_sprite.scale = Vector2(1.35, 1.35)
+	clerk_sprite.modulate = Color("#E8C987")
+	clerk_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	clerk.add_child(clerk_sprite)
+	var clerk_name := Label.new()
+	clerk_name.name = "NameLabel"
+	clerk_name.text = "ROWAN"
+	clerk_name.position = Vector2(-50, -59)
+	clerk_name.size = Vector2(100, 18)
+	clerk_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	clerk_name.add_theme_font_size_override("font_size", 10)
+	clerk_name.add_theme_color_override("font_color", Color("#F3D99B"))
+	clerk_name.add_theme_color_override("font_outline_color", Color("#263B3B"))
+	clerk_name.add_theme_constant_override("outline_size", 4)
+	clerk.add_child(clerk_name)
+
+
 func _load_scene_npcs() -> void:
 	var npc_profiles := {
 		"mira": {
 			"id": "mira", "name": "Mira", "role": "Village gardener",
 			"color": Color("#F0B6C7"),
 			"greeting": "Morning, traveler! The seedlings are finally enjoying the spring sun.",
-			"persona": "You are Mira, an optimistic village gardener. You know the crops, seasons, birds, and quiet paths around Willowmere. You are curious about the player and offer practical, kind advice."
+			"persona": "You are Mira, an optimistic village gardener. You know the crops, seasons, birds, and quiet paths around Willowmere. You are curious about the player and offer practical, kind advice. You would love three turnips for your kitchen."
 		},
 		"bram": {
 			"id": "bram", "name": "Bram", "role": "Innkeeper & storyteller",
 			"color": Color("#B7D5EF"),
 			"greeting": "Welcome to Willowmere. If you have a tale to trade, you've found the right innkeeper.",
-			"persona": "You are Bram, the warm and theatrical innkeeper of Willowmere. You collect local rumors and love telling short stories, but you never reveal secrets that would harm villagers."
+			"persona": "You are Bram, the warm and theatrical innkeeper of Willowmere. You collect local rumors and love telling short stories, but you never reveal secrets that would harm villagers. You need two potatoes for tonight's stew."
 		},
 		"juno": {
 			"id": "juno", "name": "Juno", "role": "Wandering cartographer",
 			"color": Color("#D6B8F0"),
 			"greeting": "Oh! A new face. Every good map starts with a conversation—where are you headed?",
-			"persona": "You are Juno, a thoughtful wandering cartographer resting in Willowmere. You speak about exploration, landmarks, and the wider world with poetic but useful detail."
+			"persona": "You are Juno, a thoughtful wandering cartographer resting in Willowmere. You speak about exploration, landmarks, and the wider world with poetic but useful detail. You would be grateful for three carrots for the road."
+		},
+		"clerk": {
+			"id": "clerk", "name": "Rowan", "role": "Seed & produce merchant",
+			"color": Color("#E8C987"),
+			"greeting": "Welcome to the seed shop! I've got spring seeds to sell and a fair price for anything you've grown.",
+			"persona": "You are Rowan, the cheerful seed and produce merchant in Willowmere. You sell turnip, potato, and carrot seeds, and buy fresh crops from local growers."
 		}
 	}
-	var idle_frames := {"mira": 1, "bram": 2, "juno": 3}
+	var idle_frames := {"mira": 1, "bram": 2, "juno": 3, "clerk": 0}
 	for npc_instance in get_tree().get_nodes_in_group("village_npc"):
 		var npc_node := npc_instance as Node2D
 		var npc_id := npc_node.name.trim_prefix("NPC_").to_lower()
@@ -118,8 +262,84 @@ func _load_scene_npcs() -> void:
 		npc_sprite.play("idle_down")
 		npc_sprite.frame = int(idle_frames[npc_id])
 		npc_sprite.visible = true
-		var npc_preview := npc_node.get_node("EditorPreview") as Sprite2D
-		npc_preview.visible = false
+		if npc_node.has_node("EditorPreview"):
+			var npc_preview := npc_node.get_node("EditorPreview") as Sprite2D
+			npc_preview.visible = false
+
+
+func _initialize_farm_plots() -> void:
+	var plot_layer := Node2D.new()
+	plot_layer.name = "FarmPlots"
+	farm_world.add_child(plot_layer)
+	for row in range(FARM_PLOT_ROWS):
+		for column in range(FARM_PLOT_COLUMNS):
+			var plot_position := FARM_PLOT_START + Vector2(column * FARM_PLOT_SPACING.x, row * FARM_PLOT_SPACING.y)
+			var visual := Node2D.new()
+			visual.name = "Plot_%d_%d" % [column, row]
+			visual.position = plot_position
+			visual.z_index = int(plot_position.y)
+			plot_layer.add_child(visual)
+			farm_plots.append({
+				"position": plot_position,
+				"tilled": false,
+				"crop": "",
+				"growth_days": 0,
+				"watered": false,
+				"node": visual
+			})
+			_render_farm_plot(farm_plots.size() - 1)
+
+
+func _render_farm_plot(plot_index: int) -> void:
+	var plot: Dictionary = farm_plots[plot_index]
+	var visual := plot["node"] as Node2D
+	for child in visual.get_children():
+		visual.remove_child(child)
+		child.free()
+	var tile_color := Color("#719450")
+	if bool(plot["tilled"]):
+		tile_color = Color("#584638") if bool(plot["watered"]) else Color("#805A3F")
+	_add_plot_polygon(visual, PackedVector2Array([-28, -20, 28, -20, 28, 20, -28, 20]), tile_color, 0)
+	if bool(plot["tilled"]):
+		for furrow_y in [-10.0, 0.0, 10.0]:
+			var furrow := Line2D.new()
+			furrow.points = PackedVector2Array([Vector2(-22, furrow_y), Vector2(22, furrow_y)])
+			furrow.width = 1.0
+			furrow.default_color = Color("#A67A54") if not bool(plot["watered"]) else Color("#71827A")
+			furrow.z_index = 1
+			visual.add_child(furrow)
+	var crop_name := str(plot["crop"])
+	if crop_name.is_empty():
+		return
+	var growth_days := int(plot["growth_days"])
+	var ripe := growth_days >= int(CROP_INFO[crop_name]["grow_days"])
+	var leaf_color := Color("#5E9A55") if growth_days < 2 else Color("#42874C")
+	_add_plot_polygon(visual, PackedVector2Array([-2, 11, 2, 11, 2, -10, -2, -10]), Color("#467747"), 2)
+	_add_plot_polygon(visual, PackedVector2Array([-2, 1, -17, -7, -14, -12, -1, -5]), leaf_color, 3)
+	_add_plot_polygon(visual, PackedVector2Array([2, -1, 17, -9, 14, -14, 1, -6]), leaf_color, 3)
+	if growth_days >= 2 or ripe:
+		_add_plot_polygon(visual, PackedVector2Array([-2, -7, -14, -18, -11, -23, 0, -12]), Color("#70AC57"), 3)
+		_add_plot_polygon(visual, PackedVector2Array([2, -8, 14, -19, 12, -23, 0, -12]), Color("#70AC57"), 3)
+	if ripe:
+		var crop_color: Color = CROP_INFO[crop_name]["color"]
+		_add_plot_polygon(visual, _circle_points(Vector2(0, 4), 7.0, 8), crop_color, 4)
+		_add_plot_polygon(visual, PackedVector2Array([-2, -3, 0, -9, 2, -3]), Color("#498448"), 5)
+
+
+func _add_plot_polygon(parent: Node2D, points: PackedVector2Array, color: Color, draw_order: int) -> void:
+	var polygon := Polygon2D.new()
+	polygon.polygon = points
+	polygon.color = color
+	polygon.z_index = draw_order
+	parent.add_child(polygon)
+
+
+func _circle_points(center: Vector2, radius: float, sides: int) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	for side in range(sides):
+		var angle := TAU * float(side) / float(sides)
+		points.append(center + Vector2(cos(angle), sin(angle)) * radius)
+	return points
 
 
 # Town art, collision, props, crops, villagers, and player structure are authored in World.tscn.
@@ -154,7 +374,7 @@ func _add_direction_animations(frames: SpriteFrames, prefix: String, texture: Te
 func _physics_process(_delta: float) -> void:
 	if not is_instance_valid(player):
 		return
-	if not game_started or dialogue_open or is_instance_valid(settings_overlay):
+	if not game_started or dialogue_open or is_instance_valid(settings_overlay) or is_instance_valid(shop_overlay) or is_instance_valid(inventory_overlay):
 		player.velocity = Vector2.ZERO
 		_update_player_animation(Vector2.ZERO)
 		return
@@ -201,8 +421,10 @@ func _update_player_animation(move_input: Vector2) -> void:
 			player_sprite.play(idle_animation)
 
 
-func _process(_delta: float) -> void:
-	if game_started and not dialogue_open and not is_instance_valid(settings_overlay):
+func _process(delta: float) -> void:
+	if toast_timer > 0.0:
+		toast_timer = maxf(0.0, toast_timer - delta)
+	if game_started and not dialogue_open and not is_instance_valid(settings_overlay) and not is_instance_valid(inventory_overlay):
 		_update_interaction_prompt()
 	if is_instance_valid(player):
 		player.z_index = int(player.position.y)
@@ -213,6 +435,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.keycode == KEY_ESCAPE:
 			if is_instance_valid(settings_overlay):
 				_close_settings()
+			elif is_instance_valid(shop_overlay):
+				_close_shop()
+			elif is_instance_valid(inventory_overlay):
+				_close_inventory()
 			elif dialogue_open:
 				_close_dialogue()
 			return
@@ -220,75 +446,280 @@ func _unhandled_input(event: InputEvent) -> void:
 			if not is_instance_valid(settings_overlay) and (event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER or event.keycode == KEY_SPACE):
 				_start_game()
 			return
-		if not dialogue_open and not is_instance_valid(settings_overlay) and event.keycode == KEY_E:
-			var nearby := _nearest_npc()
-			if not nearby.is_empty():
-				_open_dialogue(nearby)
-			else:
-				var crop := _nearest_forage()
-				if not crop.is_empty():
-					_harvest_crop(crop)
+		if event.keycode == KEY_I:
+			if not dialogue_open and not is_instance_valid(settings_overlay) and not is_instance_valid(shop_overlay):
+				if is_instance_valid(inventory_overlay):
+					_close_inventory()
+				else:
+					_open_inventory()
+			return
+		if dialogue_open or is_instance_valid(settings_overlay) or is_instance_valid(shop_overlay) or is_instance_valid(inventory_overlay):
+			return
+		if event.keycode >= KEY_1 and event.keycode <= KEY_9:
+			_select_hotbar_slot(event.keycode - KEY_1)
+		if active_location == "farm" and event.keycode == KEY_Q:
+			_cycle_seed()
+		if event.keycode == KEY_E:
+			_interact()
 
 
 func _nearest_npc() -> Dictionary:
 	var closest: Dictionary = {}
 	var closest_distance := NPC_INTERACT_DISTANCE
-	if not is_instance_valid(player):
+	if not is_instance_valid(player) or active_location != "town":
 		return closest
 	for npc in npcs:
 		var npc_node: Node2D = npc.get("node")
 		if not is_instance_valid(npc_node):
 			continue
-		var distance := player.position.distance_to(npc_node.position)
+		var distance := player.global_position.distance_to(npc_node.global_position)
 		if distance <= closest_distance:
 			closest_distance = distance
 			closest = npc
 	return closest
 
 
-func _nearest_forage() -> Dictionary:
-	var closest: Dictionary = {}
-	var closest_distance := 52.0
-	if not is_instance_valid(player) or crops_collected >= QUEST_CROP_TARGET:
-		return closest
-	for crop in forage_spots:
-		var crop_instance: Variant = crop.get("node")
-		if not is_instance_valid(crop_instance):
-			continue
-		var crop_node := crop_instance as Node2D
-		var distance := player.position.distance_to(crop_node.position)
+func _nearest_farm_plot() -> int:
+	if not is_instance_valid(player) or active_location != "farm":
+		return -1
+	var closest_index := -1
+	var closest_distance := 48.0
+	for index in range(farm_plots.size()):
+		var plot: Dictionary = farm_plots[index]
+		var distance: float = player.position.distance_to(plot["position"])
 		if distance <= closest_distance:
 			closest_distance = distance
-			closest = crop
-	return closest
+			closest_index = index
+	return closest_index
 
 
-func _harvest_crop(crop: Dictionary) -> void:
-	var crop_instance: Variant = crop.get("node")
-	if not is_instance_valid(crop_instance) or crops_collected >= QUEST_CROP_TARGET:
+func _interact() -> void:
+	if not is_instance_valid(player):
 		return
-	var crop_node := crop_instance as Node2D
-	forage_spots.erase(crop)
-	crop_node.queue_free()
-	crops_collected += 1
-	_update_quest_tracker()
+	if active_location == "town":
+		var nearby := _nearest_npc()
+		if not nearby.is_empty():
+			if str(nearby.get("id", "")) == "clerk":
+				_open_shop()
+			else:
+				_open_dialogue(nearby)
+			return
+		if player.position.distance_to(Vector2(576, 670)) <= 72.0:
+			_switch_location("farm", Vector2(576, 610))
+		return
+	if active_location == "farm":
+		if player.position.distance_to(Vector2(160, 270)) <= 58.0:
+			_switch_location("house", Vector2(575, 580))
+			return
+		if player.position.distance_to(Vector2(576, 682)) <= 68.0:
+			_switch_location("town", Vector2(576, 580))
+			return
+		var plot_index := _nearest_farm_plot()
+		if plot_index >= 0:
+			_use_farm_tool(plot_index)
+		return
+	if active_location == "house":
+		if player.position.distance_to(Vector2(810, 294)) <= 86.0:
+			_sleep_until_morning()
+		elif player.position.distance_to(Vector2(576, 625)) <= 74.0:
+			_switch_location("farm", Vector2(160, 292))
+
+
+func _switch_location(destination: String, spawn_position: Vector2) -> void:
+	var destination_world: Node2D
+	match destination:
+		"town":
+			destination_world = town_world
+		"farm":
+			destination_world = farm_world
+		"house":
+			destination_world = house_world
+		_:
+			return
+	if world == destination_world:
+		return
+	_set_world_collisions_enabled(world, false)
+	if player.get_parent() != null:
+		player.get_parent().remove_child(player)
+	world.visible = false
+	world = destination_world
+	world.visible = true
+	world.add_child(player)
+	_set_world_collisions_enabled(world, true)
+	player.position = spawn_position
+	player.velocity = Vector2.ZERO
+	active_location = destination
+	var camera := player.get_node("TownCamera") as Camera2D
+	camera.limit_left = 0
+	camera.limit_top = 0
+	camera.limit_right = int(WORLD_SIZE.x)
+	camera.limit_bottom = int(WORLD_SIZE.y)
+	camera.make_current()
+	camera.reset_smoothing()
+	_update_location_hud()
 	_update_interaction_prompt()
+	_show_toast("Willowmere %s" % destination.capitalize())
+
+
+func _set_world_collisions_enabled(map_root: Node2D, enabled: bool) -> void:
+	for collision_node in map_root.find_children("*", "CollisionShape2D", true, false):
+		(collision_node as CollisionShape2D).disabled = not enabled
+
+
+func _sleep_until_morning() -> void:
+	for index in range(farm_plots.size()):
+		var plot: Dictionary = farm_plots[index]
+		if str(plot["crop"]) != "" and bool(plot["watered"]):
+			plot["growth_days"] = int(plot["growth_days"]) + 1
+		plot["watered"] = false
+		farm_plots[index] = plot
+		_render_farm_plot(index)
+	day_number += 1
+	_update_location_hud()
+	_update_inventory_hud()
+	_show_toast("Day %d · Your watered crops have grown." % day_number)
+
+
+func _tool_item_id(tool_name: String) -> String:
+	match tool_name:
+		"Hoe":
+			return "tool_hoe"
+		"Seed Bag":
+			return "tool_seed_bag"
+		"Watering Can":
+			return "tool_watering_can"
+		"Harvest Knife":
+			return "tool_harvest_knife"
+	return ""
+
+
+func _select_tool(tool_name: String) -> void:
+	selected_tool = tool_name
+	var tool_item_id := _tool_item_id(tool_name)
+	var slot_index := hotbar_items.find(tool_item_id)
+	if slot_index >= 0:
+		selected_hotbar_slot = slot_index
+	_update_tool_hud()
+	_show_toast("Selected %s%s" % [tool_name, " · " + str(CROP_INFO[selected_seed]["name"]) if tool_name == "Seed Bag" else ""])
+
+
+func _cycle_seed() -> void:
+	var crop_names := ["turnip", "potato", "carrot"]
+	var start_index: int = crop_names.find(selected_seed)
+	for offset in range(1, crop_names.size() + 1):
+		var candidate: String = crop_names[(start_index + offset) % crop_names.size()]
+		if int(inventory.get(candidate + "_seed", 0)) > 0:
+			selected_seed = candidate
+			selected_tool = "Seed Bag"
+			var seed_slot := hotbar_items.find(candidate + "_seed")
+			selected_hotbar_slot = seed_slot if seed_slot >= 0 else maxi(0, hotbar_items.find("tool_seed_bag"))
+			_update_tool_hud()
+			_show_toast("Selected %s Seeds." % CROP_INFO[selected_seed]["name"])
+			return
+	_show_toast("No other seeds in your satchel.")
+
+
+func _use_farm_tool(plot_index: int) -> void:
+	var plot: Dictionary = farm_plots[plot_index]
+	var crop_name := str(plot["crop"])
+	match selected_tool:
+		"Hoe":
+			if crop_name.is_empty() and not bool(plot["tilled"]):
+				plot["tilled"] = true
+				farm_plots[plot_index] = plot
+				_render_farm_plot(plot_index)
+				_show_toast("Soil prepared. Select the Seed Bag to plant.")
+			else:
+				_show_toast("That tile is already prepared or growing a crop.")
+		"Seed Bag":
+			var seed_key := selected_seed + "_seed"
+			if not bool(plot["tilled"]):
+				_show_toast("Till this patch first with the Hoe.")
+			elif not crop_name.is_empty():
+				_show_toast("Something is already planted here.")
+			elif int(inventory.get(seed_key, 0)) <= 0:
+				_show_toast("You're out of %s. Visit Rowan's shop in town." % CROP_INFO[selected_seed]["seed_name"])
+			else:
+				inventory[seed_key] = int(inventory[seed_key]) - 1
+				plot["crop"] = selected_seed
+				plot["growth_days"] = 0
+				plot["watered"] = false
+				farm_plots[plot_index] = plot
+				_render_farm_plot(plot_index)
+				_update_inventory_hud()
+				_show_toast("Planted %s. Water it before bed." % CROP_INFO[selected_seed]["name"])
+		"Watering Can":
+			if crop_name.is_empty():
+				_show_toast("Plant a seed before watering this patch.")
+			elif bool(plot["watered"]):
+				_show_toast("This crop has already been watered today.")
+			elif int(plot["growth_days"]) >= int(CROP_INFO[crop_name]["grow_days"]):
+				_show_toast("This crop is ready to harvest with the Harvest Knife.")
+			else:
+				plot["watered"] = true
+				farm_plots[plot_index] = plot
+				_render_farm_plot(plot_index)
+				_show_toast("Watered %s. Sleep to help it grow." % CROP_INFO[crop_name]["name"])
+		"Harvest Knife":
+			if crop_name.is_empty():
+				_show_toast("There's nothing to harvest here.")
+			elif int(plot["growth_days"]) < int(CROP_INFO[crop_name]["grow_days"]):
+				_show_toast("%s needs %d more day(s) to ripen." % [CROP_INFO[crop_name]["name"], int(CROP_INFO[crop_name]["grow_days"]) - int(plot["growth_days"])])
+			else:
+				inventory[crop_name] = int(inventory.get(crop_name, 0)) + 1
+				_ensure_hotbar_item(crop_name)
+				plot["crop"] = ""
+				plot["growth_days"] = 0
+				plot["watered"] = false
+				farm_plots[plot_index] = plot
+				_render_farm_plot(plot_index)
+				_update_inventory_hud()
+				_update_quest_tracker()
+				_show_toast("Harvested a %s." % CROP_INFO[crop_name]["name"])
+		"":
+			_show_toast("Select a tool or seed in the hotbar first.")
+	_update_interaction_prompt()
+
+
+func _show_toast(message: String) -> void:
+	if not is_instance_valid(interaction_label) or not is_instance_valid(interaction_panel):
+		return
+	interaction_label.text = message
+	interaction_panel.visible = true
+	interaction_panel.modulate = Color.WHITE
+	toast_message = message
+	toast_timer = 2.2
 
 
 func _update_interaction_prompt() -> void:
 	if not is_instance_valid(interaction_panel):
 		return
-	var nearby := _nearest_npc()
-	if not nearby.is_empty():
+	if toast_timer > 0.0:
 		interaction_panel.visible = true
-		interaction_label.text = "E   TALK TO " + str(nearby.get("name", "VILLAGER")).to_upper()
+		interaction_label.text = toast_message
 		return
-	var crop := _nearest_forage()
-	if not crop.is_empty():
-		interaction_panel.visible = true
-		interaction_label.text = "E   HARVEST SPRING CROP"
-	else:
-		interaction_panel.visible = false
+	var prompt := ""
+	if active_location == "town":
+		var nearby := _nearest_npc()
+		if not nearby.is_empty():
+			prompt = "E   SHOP WITH ROWAN" if str(nearby.get("id", "")) == "clerk" else "E   TALK TO " + str(nearby.get("name", "VILLAGER")).to_upper()
+		elif player.position.distance_to(Vector2(576, 670)) <= 72.0:
+			prompt = "E   TRAVEL TO YOUR FARM"
+	elif active_location == "farm":
+		if player.position.distance_to(Vector2(160, 270)) <= 58.0:
+			prompt = "E   ENTER YOUR HOUSE"
+		elif player.position.distance_to(Vector2(576, 682)) <= 68.0:
+			prompt = "E   WALK TO TOWN"
+		elif _nearest_farm_plot() >= 0:
+			prompt = "E   %s" % (selected_tool.to_upper() if not selected_tool.is_empty() else "SELECT A FARM TOOL")
+	elif active_location == "house":
+		if player.position.distance_to(Vector2(810, 294)) <= 86.0:
+			prompt = "E   SLEEP UNTIL MORNING"
+		elif player.position.distance_to(Vector2(576, 625)) <= 74.0:
+			prompt = "E   RETURN TO THE FARM"
+	interaction_panel.visible = not prompt.is_empty()
+	if not prompt.is_empty():
+		interaction_label.text = prompt
 
 
 # -----------------------------------------------------------------------------
@@ -302,7 +733,7 @@ func _build_hud() -> void:
 
 	var top_card := PanelContainer.new()
 	top_card.position = Vector2(20, 18)
-	top_card.size = Vector2(390, 80)
+	top_card.size = Vector2(390, 88)
 	top_card.add_theme_stylebox_override("panel", _panel_style(Color("#142336"), 13, COLOR_BORDER, 1))
 	hud.add_child(top_card)
 	var top_margin := _margin(16, 16, 11, 11)
@@ -315,20 +746,20 @@ func _build_hud() -> void:
 	location.add_theme_font_size_override("font_size", 20)
 	location.add_theme_color_override("font_color", COLOR_TEXT)
 	top_copy.add_child(location)
-	var location_subtitle := Label.new()
-	location_subtitle.text = "SPRINGFALL  /  TOWN SQUARE"
-	location_subtitle.add_theme_font_size_override("font_size", 10)
-	location_subtitle.add_theme_color_override("font_color", COLOR_ACCENT)
-	top_copy.add_child(location_subtitle)
+	location_subtitle_label = Label.new()
+	location_subtitle_label.text = "TOWN  ·  SPRINGFALL"
+	location_subtitle_label.add_theme_font_size_override("font_size", 10)
+	location_subtitle_label.add_theme_color_override("font_color", COLOR_ACCENT)
+	top_copy.add_child(location_subtitle_label)
 	var controls := Label.new()
-	controls.text = "WASD / ARROWS  MOVE     E  INTERACT"
+	controls.text = "WASD MOVE   E USE   I INVENTORY   1-9 HOTBAR"
 	controls.add_theme_font_size_override("font_size", 9)
 	controls.add_theme_color_override("font_color", COLOR_FAINT)
 	top_copy.add_child(controls)
 
 	var quest_card := PanelContainer.new()
 	quest_card.position = Vector2(20, 112)
-	quest_card.size = Vector2(310, 94)
+	quest_card.size = Vector2(310, 132)
 	quest_card.add_theme_stylebox_override("panel", _panel_style(Color("#142336"), 13, COLOR_BORDER, 1))
 	hud.add_child(quest_card)
 	var quest_margin := _margin(14, 14, 10, 10)
@@ -337,13 +768,13 @@ func _build_hud() -> void:
 	quest_copy.add_theme_constant_override("separation", 4)
 	quest_margin.add_child(quest_copy)
 	quest_title_label = Label.new()
-	quest_title_label.text = "MIRA'S GARDEN REQUEST"
+	quest_title_label.text = "VILLAGE CROP REQUESTS"
 	quest_title_label.add_theme_font_size_override("font_size", 10)
 	quest_title_label.add_theme_color_override("font_color", COLOR_ACCENT)
 	quest_copy.add_child(quest_title_label)
 	quest_detail_label = Label.new()
 	quest_detail_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	quest_detail_label.add_theme_font_size_override("font_size", 11)
+	quest_detail_label.add_theme_font_size_override("font_size", 10)
 	quest_detail_label.add_theme_color_override("font_color", COLOR_TEXT)
 	quest_copy.add_child(quest_detail_label)
 
@@ -365,16 +796,16 @@ func _build_hud() -> void:
 	status_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	status_copy.add_theme_constant_override("separation", 1)
 	status_row.add_child(status_copy)
+	day_money_label = Label.new()
+	day_money_label.text = "DAY 1  ·  60g"
+	day_money_label.add_theme_font_size_override("font_size", 13)
+	day_money_label.add_theme_color_override("font_color", COLOR_MINT)
+	status_copy.add_child(day_money_label)
 	api_status_label = Label.new()
 	api_status_label.text = "GEMINI  /  DEMO MODE"
-	api_status_label.add_theme_font_size_override("font_size", 11)
+	api_status_label.add_theme_font_size_override("font_size", 9)
 	api_status_label.add_theme_color_override("font_color", COLOR_ACCENT)
 	status_copy.add_child(api_status_label)
-	var model_label := Label.new()
-	model_label.text = GEMINI_MODEL + "  ·  ONLINE CHAT"
-	model_label.add_theme_font_size_override("font_size", 9)
-	model_label.add_theme_color_override("font_color", COLOR_FAINT)
-	status_copy.add_child(model_label)
 	var settings_button := _ghost_button("Settings")
 	settings_button.custom_minimum_size = Vector2(73, 32)
 	settings_button.pressed.connect(_show_settings)
@@ -386,9 +817,9 @@ func _build_hud() -> void:
 	interaction_panel.anchor_top = 1.0
 	interaction_panel.anchor_bottom = 1.0
 	interaction_panel.offset_left = -174
-	interaction_panel.offset_top = -92
+	interaction_panel.offset_top = -150
 	interaction_panel.offset_right = 174
-	interaction_panel.offset_bottom = -48
+	interaction_panel.offset_bottom = -106
 	interaction_panel.add_theme_stylebox_override("panel", _panel_style(Color("#172A38"), 12, Color("#5B9A87"), 1))
 	interaction_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hud.add_child(interaction_panel)
@@ -402,17 +833,345 @@ func _build_hud() -> void:
 	interaction_panel.visible = false
 
 	_build_dialogue_panel()
+	_build_hotbar()
+	_update_location_hud()
+	_update_hotbar_ui()
+
+
+func _build_hotbar() -> void:
+	var panel := PanelContainer.new()
+	hotbar_panel = panel
+	panel.name = "Hotbar"
+	panel.anchor_left = 0.5
+	panel.anchor_top = 1.0
+	panel.anchor_right = 0.5
+	panel.anchor_bottom = 1.0
+	panel.offset_left = -270
+	panel.offset_top = -90
+	panel.offset_right = 270
+	panel.offset_bottom = -18
+	panel.z_index = 50
+	panel.visible = game_started
+	panel.add_theme_stylebox_override("panel", _panel_style(Color("#101B29"), 9, Color("#81908A"), 2))
+	hud.add_child(panel)
+	var margin := _margin(6, 6, 5, 5)
+	panel.add_child(margin)
+	var slots := HBoxContainer.new()
+	slots.add_theme_constant_override("separation", 6)
+	margin.add_child(slots)
+	for index in range(HOTBAR_SIZE):
+		var button := _create_item_slot_button(true, index)
+		button.pressed.connect(_select_hotbar_slot.bind(index))
+		hotbar_buttons.append(button)
+		slots.add_child(button)
+
+
+func _create_item_slot_button(is_hotbar: bool, index: int) -> Button:
+	var button := Button.new()
+	button.custom_minimum_size = Vector2(52, 52)
+	button.focus_mode = Control.FOCUS_NONE
+	button.text = ""
+	var icon := TextureRect.new()
+	icon.name = "ItemIcon"
+	icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	icon.offset_left = 7
+	icon.offset_top = 7
+	icon.offset_right = -7
+	icon.offset_bottom = -7
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	button.add_child(icon)
+	var key_label := Label.new()
+	key_label.name = "KeyLabel"
+	key_label.text = str(index + 1) if is_hotbar else ""
+	key_label.position = Vector2(3, 1)
+	key_label.size = Vector2(14, 13)
+	key_label.add_theme_font_size_override("font_size", 8)
+	key_label.add_theme_color_override("font_color", Color("#D8E0D6"))
+	key_label.add_theme_color_override("font_shadow_color", Color("#17202A"))
+	key_label.add_theme_constant_override("shadow_offset_x", 1)
+	key_label.add_theme_constant_override("shadow_offset_y", 1)
+	key_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	button.add_child(key_label)
+	var count_label := Label.new()
+	count_label.name = "CountLabel"
+	count_label.anchor_left = 1.0
+	count_label.anchor_top = 1.0
+	count_label.anchor_right = 1.0
+	count_label.anchor_bottom = 1.0
+	count_label.offset_left = -24
+	count_label.offset_top = -17
+	count_label.offset_right = -3
+	count_label.offset_bottom = -2
+	count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	count_label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	count_label.add_theme_font_size_override("font_size", 10)
+	count_label.add_theme_color_override("font_color", Color.WHITE)
+	count_label.add_theme_color_override("font_shadow_color", Color("#17202A"))
+	count_label.add_theme_constant_override("shadow_offset_x", 1)
+	count_label.add_theme_constant_override("shadow_offset_y", 1)
+	count_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	button.add_child(count_label)
+	return button
+
+
+func _open_inventory() -> void:
+	if is_instance_valid(inventory_overlay):
+		return
+	inventory_overlay = Control.new()
+	_full_rect(inventory_overlay)
+	inventory_overlay.z_index = 40
+	inventory_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	hud.add_child(inventory_overlay)
+	var shade := ColorRect.new()
+	_full_rect(shade)
+	shade.color = Color(0.025, 0.045, 0.065, 0.72)
+	shade.mouse_filter = Control.MOUSE_FILTER_STOP
+	inventory_overlay.add_child(shade)
+
+	var panel := PanelContainer.new()
+	panel.anchor_left = 0.5
+	panel.anchor_top = 0.5
+	panel.anchor_right = 0.5
+	panel.anchor_bottom = 0.5
+	panel.offset_left = -330
+	panel.offset_top = -245
+	panel.offset_right = 330
+	panel.offset_bottom = 140
+	panel.add_theme_stylebox_override("panel", _panel_style(Color("#182536"), 12, Color("#82918B"), 2))
+	inventory_overlay.add_child(panel)
+	var margin := _margin(20, 20, 16, 16)
+	panel.add_child(margin)
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 10)
+	margin.add_child(content)
+
+	var header := HBoxContainer.new()
+	content.add_child(header)
+	var title_copy := VBoxContainer.new()
+	title_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_copy.add_theme_constant_override("separation", 2)
+	header.add_child(title_copy)
+	var title := Label.new()
+	title.text = "BACKPACK"
+	title.add_theme_font_size_override("font_size", 20)
+	title.add_theme_color_override("font_color", COLOR_TEXT)
+	title_copy.add_child(title)
+	var subtitle := Label.new()
+	subtitle.text = "TOOLS  ·  SEEDS  ·  HARVEST"
+	subtitle.add_theme_font_size_override("font_size", 9)
+	subtitle.add_theme_color_override("font_color", COLOR_ACCENT)
+	title_copy.add_child(subtitle)
+	var wallet := Label.new()
+	wallet.text = "%d gold" % money
+	wallet.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	wallet.add_theme_font_size_override("font_size", 12)
+	wallet.add_theme_color_override("font_color", COLOR_MINT)
+	header.add_child(wallet)
+	var close_button := _ghost_button("Esc  ×")
+	close_button.custom_minimum_size = Vector2(68, 32)
+	close_button.pressed.connect(_close_inventory)
+	header.add_child(close_button)
+
+	var divider := ColorRect.new()
+	divider.custom_minimum_size = Vector2(0, 1)
+	divider.color = COLOR_BORDER
+	content.add_child(divider)
+	inventory_grid = GridContainer.new()
+	inventory_grid.columns = 9
+	inventory_grid.add_theme_constant_override("h_separation", 7)
+	inventory_grid.add_theme_constant_override("v_separation", 7)
+	content.add_child(inventory_grid)
+	inventory_grid_buttons.clear()
+	for index in range(INVENTORY_GRID_SIZE):
+		var button := _create_item_slot_button(false, index)
+		button.pressed.connect(_on_inventory_slot_pressed.bind(index))
+		inventory_grid_buttons.append(button)
+		inventory_grid.add_child(button)
+	var hint := Label.new()
+	hint.text = "Select a hotbar slot, then click a backpack item to place it there.  ·  I / Esc to close"
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 9)
+	hint.add_theme_color_override("font_color", COLOR_MUTED)
+	content.add_child(hint)
+	_update_inventory_grid()
+	_update_hotbar_ui()
+
+
+func _close_inventory() -> void:
+	if is_instance_valid(inventory_overlay):
+		inventory_overlay.queue_free()
+	inventory_overlay = null
+	inventory_grid = null
+	inventory_grid_buttons.clear()
+	_update_interaction_prompt()
+
+
+func _inventory_item_ids() -> Array[String]:
+	var result: Array[String] = []
+	for item_variant in ITEM_INFO.keys():
+		var item_id := str(item_variant)
+		var item_data: Dictionary = ITEM_INFO[item_id]
+		if str(item_data["kind"]) == "tool":
+			if not hotbar_items.has(item_id):
+				result.append(item_id)
+		elif int(inventory.get(item_id, 0)) > 0 and not hotbar_items.has(item_id):
+			result.append(item_id)
+	return result
+
+
+func _update_inventory_grid() -> void:
+	if not is_instance_valid(inventory_grid):
+		return
+	var item_ids := _inventory_item_ids()
+	for index in range(inventory_grid_buttons.size()):
+		var item_id := item_ids[index] if index < item_ids.size() else ""
+		_set_item_slot_visual(inventory_grid_buttons[index], item_id, false, "")
+
+
+func _update_hotbar_ui() -> void:
+	for index in range(hotbar_buttons.size()):
+		var item_id := hotbar_items[index] if index < hotbar_items.size() else ""
+		_set_item_slot_visual(hotbar_buttons[index], item_id, index == selected_hotbar_slot, str(index + 1))
+
+
+func _set_item_slot_visual(button: Button, item_id: String, selected: bool, shortcut: String) -> void:
+	if not is_instance_valid(button):
+		return
+	var fill := Color("#6B5737") if selected else Color("#29394A")
+	var border := Color("#F2B35F") if selected else Color("#52677A")
+	var border_width := 2 if selected else 1
+	button.add_theme_stylebox_override("normal", _panel_style(fill, 4, border, border_width))
+	button.add_theme_stylebox_override("hover", _panel_style(Color("#405267"), 4, Color("#EAC078"), 2))
+	button.add_theme_stylebox_override("pressed", _panel_style(Color("#243545"), 4, COLOR_MINT, 2))
+	var icon := button.get_node("ItemIcon") as TextureRect
+	var key_label := button.get_node("KeyLabel") as Label
+	var count_label := button.get_node("CountLabel") as Label
+	key_label.text = shortcut
+	if item_id.is_empty() or not ITEM_INFO.has(item_id):
+		icon.texture = null
+		count_label.text = ""
+		button.tooltip_text = "Empty slot"
+		return
+	var item_data: Dictionary = ITEM_INFO[item_id]
+	icon.texture = _get_item_icon(item_id)
+	icon.modulate = item_data["tint"]
+	var amount := int(inventory.get(item_id, 0))
+	count_label.text = str(amount) if amount > 0 else ""
+	button.tooltip_text = str(item_data["name"]) + ("  × %d" % amount if amount > 1 else "")
+
+
+func _get_item_icon(item_id: String) -> Texture2D:
+	if item_icon_cache.has(item_id):
+		return item_icon_cache[item_id] as Texture2D
+	if not ITEM_INFO.has(item_id):
+		return null
+	var item_data: Dictionary = ITEM_INFO[item_id]
+	var atlas := AtlasTexture.new()
+	atlas.atlas = INTERIOR_TEXTURE if str(item_data["sheet"]) == "interior" else SPRING_CROPS_TEXTURE
+	atlas.region = item_data["region"]
+	item_icon_cache[item_id] = atlas
+	return atlas
+
+
+func _ensure_hotbar_item(item_id: String) -> void:
+	if hotbar_items.has(item_id):
+		return
+	for index in range(4, HOTBAR_SIZE):
+		if hotbar_items[index].is_empty():
+			hotbar_items[index] = item_id
+			return
+
+
+func _cleanup_hotbar() -> void:
+	for index in range(hotbar_items.size()):
+		var item_id := hotbar_items[index]
+		if item_id.is_empty() or not ITEM_INFO.has(item_id):
+			continue
+		if str(ITEM_INFO[item_id]["kind"]) == "tool":
+			continue
+		if int(inventory.get(item_id, 0)) <= 0:
+			hotbar_items[index] = ""
+			if selected_hotbar_slot == index:
+				selected_hotbar_slot = 0
+				selected_tool = "Hoe"
+
+
+func _select_hotbar_slot(index: int) -> void:
+	if index < 0 or index >= HOTBAR_SIZE:
+		return
+	selected_hotbar_slot = index
+	var item_id := hotbar_items[index]
+	if item_id.is_empty() or not ITEM_INFO.has(item_id):
+		selected_tool = ""
+		_show_toast("Empty hotbar slot.")
+	else:
+		var item_data: Dictionary = ITEM_INFO[item_id]
+		match str(item_data["kind"]):
+			"tool":
+				selected_tool = str(item_data["tool"])
+			"seed":
+				selected_seed = str(item_data["crop"])
+				selected_tool = "Seed Bag"
+			"crop":
+				selected_tool = ""
+				_show_toast("%s · deliver it to a villager or sell it in town." % item_data["name"])
+	_update_hotbar_ui()
+	_update_interaction_prompt()
+
+
+func _on_inventory_slot_pressed(slot_index: int) -> void:
+	var item_ids := _inventory_item_ids()
+	if slot_index < 0 or slot_index >= item_ids.size():
+		return
+	var item_id := item_ids[slot_index]
+	hotbar_items[selected_hotbar_slot] = item_id
+	_select_hotbar_slot(selected_hotbar_slot)
+	_update_inventory_hud()
 
 
 func _update_quest_tracker() -> void:
 	if not is_instance_valid(quest_detail_label):
 		return
-	if quest_completed:
-		quest_title_label.text = "MIRA'S GARDEN  /  COMPLETE"
-		quest_detail_label.text = "Garden restored! Mira gave you the Garden Star."
-	else:
-		quest_title_label.text = "MIRA'S GARDEN REQUEST"
-		quest_detail_label.text = "%d / %d spring crops\nPick them in the garden, then return to Mira." % [crops_collected, QUEST_CROP_TARGET]
+	quest_title_label.text = "VILLAGE CROP REQUESTS"
+	var lines := PackedStringArray()
+	for quest in quests:
+		var crop_name: String = CROP_INFO[str(quest["crop"])]["name"]
+		if bool(quest["complete"]):
+			lines.append("%s  ·  Complete  (+%dg)" % [quest["npc_name"], quest["reward"]])
+		elif bool(quest["accepted"]):
+			lines.append("%s  ·  %d/%d %s" % [quest["npc_name"], inventory.get(str(quest["crop"]), 0), quest["amount"], crop_name])
+		else:
+			lines.append("%s  ·  Ask for a request" % quest["npc_name"])
+	quest_detail_label.text = "\n".join(lines)
+
+
+func _update_location_hud() -> void:
+	if is_instance_valid(location_subtitle_label):
+		var location_name: String = "WILLOWMERE"
+		match active_location:
+			"town":
+				location_name = "TOWN"
+			"farm":
+				location_name = "YOUR FARM"
+			"house":
+				location_name = "MEADOW HOUSE"
+		location_subtitle_label.text = "%s  ·  DAY %d" % [location_name, day_number]
+	if is_instance_valid(day_money_label):
+		day_money_label.text = "DAY %d  ·  %dg" % [day_number, money]
+
+
+func _update_inventory_hud() -> void:
+	_cleanup_hotbar()
+	_update_hotbar_ui()
+	_update_inventory_grid()
+	_update_quest_tracker()
+
+
+func _update_tool_hud() -> void:
+	_update_hotbar_ui()
 
 
 func _build_title_screen() -> void:
@@ -469,7 +1228,7 @@ func _build_title_screen() -> void:
 	divider.color = COLOR_BORDER
 	content.add_child(divider)
 	var description := Label.new()
-	description.text = "Meet the townsfolk, gather spring crops, and help Mira bring her garden back to life."
+	description.text = "Make a home in Willowmere: grow a little farm, meet the townsfolk, and earn a living from your harvest."
 	description.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	description.custom_minimum_size = Vector2(0, 48)
@@ -477,7 +1236,7 @@ func _build_title_screen() -> void:
 	description.add_theme_color_override("font_color", COLOR_MUTED)
 	content.add_child(description)
 	var objective := Label.new()
-	objective.text = "YOUR FIRST ERRAND   ·   COLLECT 5 CROPS FOR MIRA"
+	objective.text = "PLANT  ·  WATER  ·  SLEEP  ·  HARVEST  ·  SELL OR DELIVER"
 	objective.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	objective.add_theme_font_size_override("font_size", 11)
 	objective.add_theme_color_override("font_color", COLOR_ACCENT)
@@ -504,7 +1263,7 @@ func _build_title_screen() -> void:
 	actions.add_child(settings_button)
 
 	var controls := Label.new()
-	controls.text = "ENTER  BEGIN     ·     WASD / ARROWS  MOVE     ·     E  INTERACT"
+	controls.text = "ENTER BEGIN  ·  WASD MOVE  ·  E USE  ·  I INVENTORY  ·  1-9 SELECT HOTBAR"
 	controls.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	controls.add_theme_font_size_override("font_size", 10)
 	controls.add_theme_color_override("font_color", COLOR_FAINT)
@@ -513,6 +1272,8 @@ func _build_title_screen() -> void:
 
 func _start_game() -> void:
 	game_started = true
+	if is_instance_valid(hotbar_panel):
+		hotbar_panel.visible = true
 	if is_instance_valid(title_overlay):
 		title_overlay.queue_free()
 	title_overlay = null
@@ -526,9 +1287,9 @@ func _build_dialogue_panel() -> void:
 	dialogue_panel.anchor_top = 1.0
 	dialogue_panel.anchor_bottom = 1.0
 	dialogue_panel.offset_left = -475
-	dialogue_panel.offset_top = -292
+	dialogue_panel.offset_top = -424
 	dialogue_panel.offset_right = 475
-	dialogue_panel.offset_bottom = -18
+	dialogue_panel.offset_bottom = -104
 	dialogue_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	dialogue_panel.add_theme_stylebox_override("panel", _panel_style(Color("#101C2B"), 15, Color("#496477"), 1))
 	hud.add_child(dialogue_panel)
@@ -595,6 +1356,25 @@ func _build_dialogue_panel() -> void:
 	dialogue_list.add_theme_constant_override("separation", 7)
 	dialogue_scroll.add_child(dialogue_list)
 
+	var quest_action_row := HBoxContainer.new()
+	quest_action_row.custom_minimum_size = Vector2(0, 35)
+	quest_action_row.add_theme_constant_override("separation", 10)
+	content.add_child(quest_action_row)
+	quest_action_button = Button.new()
+	quest_action_button.custom_minimum_size = Vector2(170, 34)
+	quest_action_button.add_theme_font_size_override("font_size", 10)
+	_apply_button_style(quest_action_button, Color("#337C75"), Color("#4D9E91"), Color("#28655F"))
+	quest_action_button.add_theme_color_override("font_color", Color.WHITE)
+	quest_action_button.pressed.connect(_on_quest_action_pressed)
+	quest_action_row.add_child(quest_action_button)
+	quest_action_status = Label.new()
+	quest_action_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	quest_action_status.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	quest_action_status.add_theme_font_size_override("font_size", 10)
+	quest_action_status.add_theme_color_override("font_color", COLOR_MUTED)
+	quest_action_row.add_child(quest_action_status)
+	quest_action_row.visible = false
+
 	var input_row := HBoxContainer.new()
 	input_row.custom_minimum_size = Vector2(0, 40)
 	input_row.add_theme_constant_override("separation", 8)
@@ -623,6 +1403,9 @@ func _build_dialogue_panel() -> void:
 func _open_dialogue(npc: Dictionary) -> void:
 	if dialogue_open:
 		return
+	if str(npc.get("id", "")) == "clerk":
+		_open_shop()
+		return
 	active_npc = npc
 	dialogue_open = true
 	interaction_panel.visible = false
@@ -635,17 +1418,18 @@ func _open_dialogue(npc: Dictionary) -> void:
 		child.free()
 	dialogue_history.clear()
 	var greeting := str(npc.get("greeting", "Hello there."))
-	if str(npc.get("id", "")) == "mira":
-		if quest_completed:
-			greeting = "The garden is flourishing again, thanks to you. Please take this little Garden Star—I pressed it from my favorite spring flower."
-		elif crops_collected >= QUEST_CROP_TARGET:
-			quest_completed = true
-			_update_quest_tracker()
-			greeting = "You gathered every crop! The garden will be thriving by sundown. Here, take this Garden Star as a thank-you."
+	var quest := _quest_for_npc(str(npc.get("id", "")))
+	if not quest.is_empty():
+		var crop_name: String = CROP_INFO[str(quest["crop"])]["name"]
+		if bool(quest["complete"]):
+			greeting += " Thanks again for bringing me those %s!" % crop_name.to_lower()
+		elif bool(quest["accepted"]):
+			greeting += " I'm still hoping for %d %s. Have you got them?" % [quest["amount"], crop_name.to_lower()]
 		else:
-			greeting = "Could you lend me a hand with the spring garden? Gather five spring crops from the beds nearby and bring them back to me. You've found %d so far." % crops_collected
+			greeting += " Could you grow and bring me %d %s? I'll pay you %d gold." % [quest["amount"], crop_name.to_lower(), quest["reward"]]
 	dialogue_history.append({"role": "model", "text": greeting})
 	_add_dialogue_line(str(npc.get("name", "Villager")), greeting, false, false)
+	_update_npc_quest_actions()
 	dialogue_input.clear()
 	dialogue_input.editable = true
 	dialogue_input.grab_focus()
@@ -664,6 +1448,266 @@ func _close_dialogue() -> void:
 	dialogue_open = false
 	active_npc = {}
 	dialogue_panel.visible = false
+	if is_instance_valid(quest_action_button):
+		quest_action_button.get_parent().visible = false
+	_update_interaction_prompt()
+
+
+func _quest_for_npc(npc_id: String) -> Dictionary:
+	for quest in quests:
+		if str(quest["npc_id"]) == npc_id:
+			return quest
+	return {}
+
+
+func _update_npc_quest_actions() -> void:
+	if not is_instance_valid(quest_action_button):
+		return
+	var quest := _quest_for_npc(str(active_npc.get("id", "")))
+	var action_row := quest_action_button.get_parent() as Control
+	action_row.visible = not quest.is_empty()
+	if quest.is_empty():
+		return
+	var crop_name: String = CROP_INFO[str(quest["crop"])]["name"]
+	var held := int(inventory.get(str(quest["crop"]), 0))
+	if bool(quest["complete"]):
+		quest_action_button.text = "Request complete"
+		quest_action_button.disabled = true
+		quest_action_status.text = "They appreciate your delivery."
+	elif not bool(quest["accepted"]):
+		quest_action_button.text = "Accept request"
+		quest_action_button.disabled = false
+		quest_action_status.text = "%d %s  ·  %dg reward" % [quest["amount"], crop_name, quest["reward"]]
+	elif held >= int(quest["amount"]):
+		quest_action_button.text = "Deliver %d %s" % [quest["amount"], crop_name]
+		quest_action_button.disabled = false
+		quest_action_status.text = "In your satchel: %d" % held
+	else:
+		quest_action_button.text = "Request accepted"
+		quest_action_button.disabled = true
+		quest_action_status.text = "Bring %d %s  ·  You have %d" % [quest["amount"], crop_name.to_lower(), held]
+
+
+func _on_quest_action_pressed() -> void:
+	var quest := _quest_for_npc(str(active_npc.get("id", "")))
+	if quest.is_empty() or bool(quest["complete"]):
+		return
+	var crop_name := str(quest["crop"])
+	var display_crop: String = CROP_INFO[crop_name]["name"]
+	if not bool(quest["accepted"]):
+		quest["accepted"] = true
+		var accepted_line := "Thank you! Bring me %d %s when your harvest is ready." % [quest["amount"], display_crop.to_lower()]
+		_add_dialogue_line(str(active_npc.get("name", "Villager")), accepted_line, false, false)
+		dialogue_history.append({"role": "model", "text": accepted_line})
+	else:
+		var required := int(quest["amount"])
+		if int(inventory.get(crop_name, 0)) < required:
+			return
+		inventory[crop_name] = int(inventory[crop_name]) - required
+		_cleanup_hotbar()
+		money += int(quest["reward"])
+		quest["complete"] = true
+		var delivered_line := "These are perfect! Here's %d gold for your %s. Thank you!" % [quest["reward"], display_crop.to_lower()]
+		_add_dialogue_line(str(active_npc.get("name", "Villager")), delivered_line, false, false)
+		dialogue_history.append({"role": "model", "text": delivered_line})
+		_update_inventory_hud()
+		_update_location_hud()
+	_update_npc_quest_actions()
+	_update_quest_tracker()
+
+
+func _open_shop() -> void:
+	if is_instance_valid(shop_overlay):
+		return
+	shop_overlay = Control.new()
+	_full_rect(shop_overlay)
+	shop_overlay.z_index = 45
+	shop_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	hud.add_child(shop_overlay)
+	var shade := ColorRect.new()
+	_full_rect(shade)
+	shade.color = Color(0.02, 0.05, 0.08, 0.8)
+	shade.mouse_filter = Control.MOUSE_FILTER_STOP
+	shop_overlay.add_child(shade)
+
+	var panel := PanelContainer.new()
+	panel.anchor_left = 0.5
+	panel.anchor_top = 0.5
+	panel.anchor_right = 0.5
+	panel.anchor_bottom = 0.5
+	panel.offset_left = -292
+	panel.offset_top = -252
+	panel.offset_right = 292
+	panel.offset_bottom = 252
+	panel.add_theme_stylebox_override("panel", _panel_style(Color("#142336"), 17, Color("#668675"), 2))
+	shop_overlay.add_child(panel)
+	var margin := _margin(24, 24, 20, 20)
+	panel.add_child(margin)
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 10)
+	margin.add_child(content)
+
+	var header := HBoxContainer.new()
+	content.add_child(header)
+	var title_copy := VBoxContainer.new()
+	title_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_copy.add_theme_constant_override("separation", 2)
+	header.add_child(title_copy)
+	var title := Label.new()
+	title.text = "Rowan's Seed & Produce"
+	title.add_theme_font_size_override("font_size", 21)
+	title.add_theme_color_override("font_color", COLOR_TEXT)
+	title_copy.add_child(title)
+	var subtitle := Label.new()
+	subtitle.text = "BUY SEEDS  ·  SELL YOUR HARVEST"
+	subtitle.add_theme_font_size_override("font_size", 9)
+	subtitle.add_theme_color_override("font_color", COLOR_ACCENT)
+	title_copy.add_child(subtitle)
+	var close_button := _ghost_button("Esc  ×")
+	close_button.custom_minimum_size = Vector2(68, 32)
+	close_button.pressed.connect(_close_shop)
+	header.add_child(close_button)
+
+	shop_wallet_label = Label.new()
+	shop_wallet_label.add_theme_font_size_override("font_size", 12)
+	shop_wallet_label.add_theme_color_override("font_color", COLOR_MINT)
+	content.add_child(shop_wallet_label)
+	var greeting := Label.new()
+	greeting.text = "Rowan: Welcome to the seed shop! I've got seeds to sell and fair prices for your harvest."
+	greeting.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	greeting.add_theme_font_size_override("font_size", 10)
+	greeting.add_theme_color_override("font_color", COLOR_TEXT)
+	content.add_child(greeting)
+	var explainer := Label.new()
+	explainer.text = "Water crops each day, then sleep to help them grow."
+	explainer.add_theme_font_size_override("font_size", 10)
+	explainer.add_theme_color_override("font_color", COLOR_MUTED)
+	content.add_child(explainer)
+	var divider := ColorRect.new()
+	divider.custom_minimum_size = Vector2(0, 1)
+	divider.color = COLOR_BORDER
+	content.add_child(divider)
+	shop_rows = VBoxContainer.new()
+	shop_rows.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	shop_rows.add_theme_constant_override("separation", 8)
+	content.add_child(shop_rows)
+	var hint := Label.new()
+	hint.text = "Plant with 2 · Cycle seeds with Q   /   Esc to close"
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 9)
+	hint.add_theme_color_override("font_color", COLOR_FAINT)
+	content.add_child(hint)
+	_refresh_shop_menu()
+
+
+func _refresh_shop_menu() -> void:
+	if not is_instance_valid(shop_rows):
+		return
+	for child in shop_rows.get_children():
+		shop_rows.remove_child(child)
+		child.queue_free()
+	if is_instance_valid(shop_wallet_label):
+		shop_wallet_label.text = "Wallet: %d gold" % money
+	for crop_variant in CROP_INFO.keys():
+		var crop_name := str(crop_variant)
+		var crop_data: Dictionary = CROP_INFO[crop_name]
+		var row := HBoxContainer.new()
+		row.custom_minimum_size = Vector2(0, 68)
+		row.add_theme_constant_override("separation", 7)
+		shop_rows.add_child(row)
+		var item_copy := VBoxContainer.new()
+		item_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		item_copy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		item_copy.add_theme_constant_override("separation", 2)
+		row.add_child(item_copy)
+		var crop_title := Label.new()
+		crop_title.text = str(crop_data["name"]).to_upper()
+		crop_title.add_theme_font_size_override("font_size", 12)
+		crop_title.add_theme_color_override("font_color", COLOR_TEXT)
+		item_copy.add_child(crop_title)
+		var crop_details := Label.new()
+		crop_details.text = "Seeds %d gold  ·  %d days  ·  Sell %d gold" % [crop_data["seed_price"], crop_data["grow_days"], crop_data["sell_price"]]
+		crop_details.add_theme_font_size_override("font_size", 9)
+		crop_details.add_theme_color_override("font_color", COLOR_MUTED)
+		item_copy.add_child(crop_details)
+		var buy_button := Button.new()
+		buy_button.text = "Buy seed\n%dg" % crop_data["seed_price"]
+		buy_button.custom_minimum_size = Vector2(86, 50)
+		buy_button.add_theme_font_size_override("font_size", 9)
+		_apply_button_style(buy_button, Color("#337C75"), Color("#4D9E91"), Color("#28655F"))
+		buy_button.add_theme_color_override("font_color", Color.WHITE)
+		buy_button.pressed.connect(_buy_seed.bind(crop_name))
+		row.add_child(buy_button)
+		var sell_button := Button.new()
+		sell_button.text = "Sell 1\n%dg" % crop_data["sell_price"]
+		sell_button.custom_minimum_size = Vector2(82, 50)
+		sell_button.add_theme_font_size_override("font_size", 9)
+		_apply_button_style(sell_button, Color("#34495A"), Color("#496174"), Color("#253849"))
+		sell_button.add_theme_color_override("font_color", COLOR_TEXT)
+		sell_button.disabled = int(inventory.get(crop_name, 0)) <= 0
+		sell_button.pressed.connect(_sell_crop.bind(crop_name))
+		row.add_child(sell_button)
+		var select_button := _ghost_button("Use")
+		select_button.custom_minimum_size = Vector2(54, 48)
+		select_button.disabled = selected_seed == crop_name
+		select_button.pressed.connect(_select_seed.bind(crop_name))
+		row.add_child(select_button)
+
+
+func _buy_seed(crop_name: String) -> void:
+	var price := int(CROP_INFO[crop_name]["seed_price"])
+	if money < price:
+		_show_toast("You need %d more gold." % (price - money))
+		return
+	money -= price
+	var seed_key := crop_name + "_seed"
+	inventory[seed_key] = int(inventory.get(seed_key, 0)) + 1
+	_ensure_hotbar_item(seed_key)
+	selected_seed = crop_name
+	selected_tool = "Seed Bag"
+	var seed_slot := hotbar_items.find(seed_key)
+	if seed_slot >= 0:
+		selected_hotbar_slot = seed_slot
+	_update_location_hud()
+	_update_inventory_hud()
+	_update_tool_hud()
+	_refresh_shop_menu()
+	_show_toast("Bought %s." % CROP_INFO[crop_name]["seed_name"])
+
+
+func _sell_crop(crop_name: String) -> void:
+	if int(inventory.get(crop_name, 0)) <= 0:
+		return
+	inventory[crop_name] = int(inventory[crop_name]) - 1
+	money += int(CROP_INFO[crop_name]["sell_price"])
+	_update_location_hud()
+	_update_inventory_hud()
+	_update_npc_quest_actions()
+	_refresh_shop_menu()
+	_show_toast("Sold 1 %s for %d gold." % [CROP_INFO[crop_name]["name"].to_lower(), CROP_INFO[crop_name]["sell_price"]])
+
+
+func _select_seed(crop_name: String) -> void:
+	selected_seed = crop_name
+	selected_tool = "Seed Bag"
+	var seed_slot := hotbar_items.find(crop_name + "_seed")
+	if seed_slot >= 0:
+		selected_hotbar_slot = seed_slot
+	else:
+		var bag_slot := hotbar_items.find("tool_seed_bag")
+		if bag_slot >= 0:
+			selected_hotbar_slot = bag_slot
+	_update_tool_hud()
+	_refresh_shop_menu()
+	_show_toast("Selected %s Seeds." % CROP_INFO[crop_name]["name"])
+
+
+func _close_shop() -> void:
+	if is_instance_valid(shop_overlay):
+		shop_overlay.queue_free()
+	shop_overlay = null
+	shop_rows = null
+	shop_wallet_label = null
 	_update_interaction_prompt()
 
 
